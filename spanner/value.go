@@ -1995,6 +1995,969 @@ func decodeValue(v *proto3.Value, t *sppb.Type, ptr interface{}, opts ...decodeO
 	return nil
 }
 
+// decodeValue decodes a protobuf Value into a pointer to a Go value, as
+// specified by sppb.Type.
+func decodeValueExtended(v *proto3.Value, t *sppb.Type, ptr interface{}, customDecoder func(v *proto3.Value, t *sppb.Type, ptr interface{}) bool, opts ...decodeOptions) error {
+	if v == nil {
+		return errNilSrc()
+	}
+	if t == nil {
+		return errNilSpannerType()
+	}
+	code := t.Code
+	typeAnnotation := t.TypeAnnotation
+	acode := sppb.TypeCode_TYPE_CODE_UNSPECIFIED
+	atypeAnnotation := sppb.TypeAnnotationCode_TYPE_ANNOTATION_CODE_UNSPECIFIED
+	if code == sppb.TypeCode_ARRAY {
+		if t.ArrayElementType == nil {
+			return errNilArrElemType(t)
+		}
+		acode = t.ArrayElementType.Code
+		atypeAnnotation = t.ArrayElementType.TypeAnnotation
+	}
+	_, isNull := v.Kind.(*proto3.Value_NullValue)
+
+	// Try the custom decoder first.
+	if customDecoder != nil && customDecoder(v, t, ptr) {
+		return nil
+	}
+
+	// Do the decoding based on the type of ptr.
+	switch p := ptr.(type) {
+	case nil:
+		return errNilDst(nil)
+	case *string:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_STRING {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			return errDstNotForNull(ptr)
+		}
+		x, err := getStringValue(v)
+		if err != nil {
+			return err
+		}
+		*p = x
+	case *NullString, **string, *sql.NullString:
+		// Most Null* types are automatically supported for both spanner.Null* and sql.Null* types, except for
+		// NullString, and we need to add explicit support for it here. The reason that the other types are
+		// automatically supported is that they use the same field names (e.g. spanner.NullBool and sql.NullBool both
+		// contain the fields Valid and Bool). spanner.NullString has a field StringVal, sql.NullString has a field
+		// String.
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_STRING {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *NullString:
+				*sp = NullString{}
+			case **string:
+				*sp = nil
+			case *sql.NullString:
+				*sp = sql.NullString{}
+			}
+			break
+		}
+		x, err := getStringValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *NullString:
+			sp.Valid = true
+			sp.StringVal = x
+		case **string:
+			*sp = &x
+		case *sql.NullString:
+			sp.Valid = true
+			sp.String = x
+		}
+	case *[]NullString, *[]*string:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_STRING {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *[]NullString:
+				*sp = nil
+			case *[]*string:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *[]NullString:
+			y, err := decodeNullStringArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		case *[]*string:
+			y, err := decodeStringPointerArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		}
+	case *[]string:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_STRING {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeStringArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *[]byte:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_BYTES {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getStringValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := base64.StdEncoding.DecodeString(x)
+		if err != nil {
+			return errBadEncoding(v, err)
+		}
+		*p = y
+	case *[][]byte:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_BYTES {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeByteArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *int64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_INT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			return errDstNotForNull(ptr)
+		}
+		x, err := getStringValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := strconv.ParseInt(x, 10, 64)
+		if err != nil {
+			return errBadEncoding(v, err)
+		}
+		*p = y
+	case *NullInt64, **int64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_INT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *NullInt64:
+				*sp = NullInt64{}
+			case **int64:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getStringValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := strconv.ParseInt(x, 10, 64)
+		if err != nil {
+			return errBadEncoding(v, err)
+		}
+		switch sp := ptr.(type) {
+		case *NullInt64:
+			sp.Valid = true
+			sp.Int64 = y
+		case **int64:
+			*sp = &y
+		}
+	case *[]NullInt64, *[]*int64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_INT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *[]NullInt64:
+				*sp = nil
+			case *[]*int64:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *[]NullInt64:
+			y, err := decodeNullInt64Array(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		case *[]*int64:
+			y, err := decodeInt64PointerArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		}
+	case *[]int64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_INT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeInt64Array(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *bool:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_BOOL {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			return errDstNotForNull(ptr)
+		}
+		x, err := getBoolValue(v)
+		if err != nil {
+			return err
+		}
+		*p = x
+	case *NullBool, **bool:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_BOOL {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *NullBool:
+				*sp = NullBool{}
+			case **bool:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getBoolValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *NullBool:
+			sp.Valid = true
+			sp.Bool = x
+		case **bool:
+			*sp = &x
+		}
+	case *[]NullBool, *[]*bool:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_BOOL {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *[]NullBool:
+				*sp = nil
+			case *[]*bool:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *[]NullBool:
+			y, err := decodeNullBoolArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		case *[]*bool:
+			y, err := decodeBoolPointerArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		}
+	case *[]bool:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_BOOL {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeBoolArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *float64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_FLOAT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			return errDstNotForNull(ptr)
+		}
+		x, err := getFloat64Value(v)
+		if err != nil {
+			return err
+		}
+		*p = x
+	case *NullFloat64, **float64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_FLOAT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *NullFloat64:
+				*sp = NullFloat64{}
+			case **float64:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getFloat64Value(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *NullFloat64:
+			sp.Valid = true
+			sp.Float64 = x
+		case **float64:
+			*sp = &x
+		}
+	case *[]NullFloat64, *[]*float64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_FLOAT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *[]NullFloat64:
+				*sp = nil
+			case *[]*float64:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *[]NullFloat64:
+			y, err := decodeNullFloat64Array(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		case *[]*float64:
+			y, err := decodeFloat64PointerArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		}
+	case *[]float64:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_FLOAT64 {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeFloat64Array(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *big.Rat:
+		if code != sppb.TypeCode_NUMERIC {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			return errDstNotForNull(ptr)
+		}
+		x := v.GetStringValue()
+		y, ok := (&big.Rat{}).SetString(x)
+		if !ok {
+			return errUnexpectedNumericStr(x)
+		}
+		*p = *y
+	case *NullJSON:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code == sppb.TypeCode_ARRAY {
+			if acode != sppb.TypeCode_JSON {
+				return errTypeMismatch(code, acode, ptr)
+			}
+			x, err := getListValue(v)
+			if err != nil {
+				return err
+			}
+			y, err := decodeNullJSONArrayToNullJSON(x)
+			if err != nil {
+				return err
+			}
+			*p = *y
+		} else {
+			if code != sppb.TypeCode_JSON {
+				return errTypeMismatch(code, acode, ptr)
+			}
+			if isNull {
+				*p = NullJSON{}
+				break
+			}
+			x := v.GetStringValue()
+			var y interface{}
+			err := json.Unmarshal([]byte(x), &y)
+			if err != nil {
+				return err
+			}
+			*p = NullJSON{y, true}
+		}
+	case *[]NullJSON:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_JSON {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeNullJSONArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *NullNumeric:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_NUMERIC {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = NullNumeric{}
+			break
+		}
+		x := v.GetStringValue()
+		y, ok := (&big.Rat{}).SetString(x)
+		if !ok {
+			return errUnexpectedNumericStr(x)
+		}
+		*p = NullNumeric{*y, true}
+	case **big.Rat:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_NUMERIC {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x := v.GetStringValue()
+		y, ok := (&big.Rat{}).SetString(x)
+		if !ok {
+			return errUnexpectedNumericStr(x)
+		}
+		*p = y
+	case *[]NullNumeric, *[]*big.Rat:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_NUMERIC {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *[]NullNumeric:
+				*sp = nil
+			case *[]*big.Rat:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *[]NullNumeric:
+			y, err := decodeNullNumericArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		case *[]*big.Rat:
+			y, err := decodeNumericPointerArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		}
+	case *[]big.Rat:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_NUMERIC {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeNumericArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *PGNumeric:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_NUMERIC || typeAnnotation != sppb.TypeAnnotationCode_PG_NUMERIC {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = PGNumeric{}
+			break
+		}
+		*p = PGNumeric{v.GetStringValue(), true}
+	case *[]PGNumeric:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_NUMERIC || atypeAnnotation != sppb.TypeAnnotationCode_PG_NUMERIC {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodePGNumericArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *PGJsonB:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_JSON || typeAnnotation != sppb.TypeAnnotationCode_PG_JSONB {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = PGJsonB{}
+			break
+		}
+		x := v.GetStringValue()
+		var y interface{}
+		err := json.Unmarshal([]byte(x), &y)
+		if err != nil {
+			return err
+		}
+		*p = PGJsonB{Value: y, Valid: true}
+	case *[]PGJsonB:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_JSON || typeAnnotation != sppb.TypeAnnotationCode_PG_JSONB {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodePGJsonBArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *time.Time:
+		var nt NullTime
+		if isNull {
+			return errDstNotForNull(ptr)
+		}
+		err := parseNullTime(v, &nt, code, isNull)
+		if err != nil {
+			return err
+		}
+		*p = nt.Time
+	case *NullTime:
+		err := parseNullTime(v, p, code, isNull)
+		if err != nil {
+			return err
+		}
+	case **time.Time:
+		var nt NullTime
+		if isNull {
+			*p = nil
+			break
+		}
+		err := parseNullTime(v, &nt, code, isNull)
+		if err != nil {
+			return err
+		}
+		*p = &nt.Time
+	case *[]NullTime, *[]*time.Time:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_TIMESTAMP {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *[]NullTime:
+				*sp = nil
+			case *[]*time.Time:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *[]NullTime:
+			y, err := decodeNullTimeArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		case *[]*time.Time:
+			y, err := decodeTimePointerArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		}
+	case *[]time.Time:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_TIMESTAMP {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeTimeArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *civil.Date:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_DATE {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			return errDstNotForNull(ptr)
+		}
+		x, err := getStringValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := civil.ParseDate(x)
+		if err != nil {
+			return errBadEncoding(v, err)
+		}
+		*p = y
+	case *NullDate, **civil.Date:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if code != sppb.TypeCode_DATE {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *NullDate:
+				*sp = NullDate{}
+			case **civil.Date:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getStringValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := civil.ParseDate(x)
+		if err != nil {
+			return errBadEncoding(v, err)
+		}
+		switch sp := ptr.(type) {
+		case *NullDate:
+			sp.Valid = true
+			sp.Date = y
+		case **civil.Date:
+			*sp = &y
+		}
+	case *[]NullDate, *[]*civil.Date:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_DATE {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			switch sp := ptr.(type) {
+			case *[]NullDate:
+				*sp = nil
+			case *[]*civil.Date:
+				*sp = nil
+			}
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		switch sp := ptr.(type) {
+		case *[]NullDate:
+			y, err := decodeNullDateArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		case *[]*civil.Date:
+			y, err := decodeDatePointerArray(x)
+			if err != nil {
+				return err
+			}
+			*sp = y
+		}
+	case *[]civil.Date:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_DATE {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeDateArray(x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *[]NullRow:
+		if p == nil {
+			return errNilDst(p)
+		}
+		if acode != sppb.TypeCode_STRUCT {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		if isNull {
+			*p = nil
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		y, err := decodeRowArray(t.ArrayElementType.StructType, x)
+		if err != nil {
+			return err
+		}
+		*p = y
+	case *GenericColumnValue:
+		*p = GenericColumnValue{Type: t, Value: v}
+	default:
+		// Check if the pointer is a custom type that implements spanner.Decoder
+		// interface.
+		if decodedVal, ok := ptr.(Decoder); ok {
+			x, err := getGenericValue(t, v)
+			if err != nil {
+				return err
+			}
+			return decodedVal.DecodeSpanner(x)
+		}
+
+		// Check if the pointer is a variant of a base type.
+		decodableType := getDecodableSpannerType(ptr, true)
+		if decodableType != spannerTypeUnknown {
+			if isNull && !decodableType.supportsNull() {
+				return errDstNotForNull(ptr)
+			}
+			return decodableType.decodeValueToCustomType(v, t, acode, atypeAnnotation, ptr)
+		}
+
+		// Check if the proto encoding is for an array of structs.
+		if !(code == sppb.TypeCode_ARRAY && acode == sppb.TypeCode_STRUCT) {
+			return errTypeMismatch(code, acode, ptr)
+		}
+		vp := reflect.ValueOf(p)
+		if !vp.IsValid() {
+			return errNilDst(p)
+		}
+		if !isPtrStructPtrSlice(vp.Type()) {
+			// The container is not a slice of struct pointers.
+			return fmt.Errorf("the container is not a slice of struct pointers: %v", errTypeMismatch(code, acode, ptr))
+		}
+		// Only use reflection for nil detection on slow path.
+		// Also, IsNil panics on many types, so check it after the type check.
+		if vp.IsNil() {
+			return errNilDst(p)
+		}
+		if isNull {
+			// The proto Value is encoding NULL, set the pointer to struct
+			// slice to nil as well.
+			vp.Elem().Set(reflect.Zero(vp.Elem().Type()))
+			break
+		}
+		x, err := getListValue(v)
+		if err != nil {
+			return err
+		}
+		s := decodeSetting{
+			Lenient: false,
+		}
+		for _, opt := range opts {
+			opt.Apply(&s)
+		}
+		if err = decodeStructArray(t.ArrayElementType.StructType, x, p, s.Lenient); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // decodableSpannerType represents the Go types that a value from a Spanner
 // database can be converted to.
 type decodableSpannerType uint
@@ -2072,7 +3035,7 @@ var typeOfNullJSON = reflect.TypeOf(NullJSON{})
 var typeOfPGNumeric = reflect.TypeOf(PGNumeric{})
 var typeOfPGJsonB = reflect.TypeOf(PGJsonB{})
 
-// getDecodableSpannerType returns the corresponding decodableSpannerType of
+//  returns the corresponding decodableSpannerType of
 // the given pointer.
 func getDecodableSpannerType(ptr interface{}, isPtr bool) decodableSpannerType {
 	var val reflect.Value
@@ -3263,6 +4226,62 @@ func decodeStruct(ty *sppb.StructType, pb *proto3.ListValue, ptr interface{}, le
 		opts := []decodeOptions{withLenient{lenient: lenient}}
 		// Try to decode a single field.
 		if err := decodeValue(pb.Values[i], f.Type, v.FieldByIndex(sf.Index).Addr().Interface(), opts...); err != nil {
+			return errDecodeStructField(ty, f.Name, err)
+		}
+		// Mark field f.Name as processed.
+		seen[f.Name] = true
+	}
+	return nil
+}
+
+// decodeStruct decodes proto3.ListValue pb into struct referenced by pointer
+// ptr, according to
+// the structural information given in sppb.StructType ty.
+func decodeStructExtended(ty *sppb.StructType, pb *proto3.ListValue, ptr interface{}, lenient bool, 
+		customDecoder func(v *proto3.Value, t *sppb.Type, ptr interface{}) bool) error {
+	if reflect.ValueOf(ptr).IsNil() {
+		return errNilDst(ptr)
+	}
+	if ty == nil {
+		return errNilSpannerStructType()
+	}
+	// t holds the structural information of ptr.
+	t := reflect.TypeOf(ptr).Elem()
+	// v is the actual value that ptr points to.
+	v := reflect.ValueOf(ptr).Elem()
+
+	fields, err := fieldCache.Fields(t)
+	if err != nil {
+		return ToSpannerError(err)
+	}
+	// return error if lenient is true and destination has duplicate exported columns
+	if lenient {
+		fieldNames := getAllFieldNames(v)
+		for _, f := range fieldNames {
+			if fields.Match(f) == nil {
+				return errDupGoField(ptr, f)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for i, f := range ty.Fields {
+		if f.Name == "" {
+			return errUnnamedField(ty, i)
+		}
+		sf := fields.Match(f.Name)
+		if sf == nil {
+			if lenient {
+				continue
+			}
+			return errNoOrDupGoField(ptr, f.Name)
+		}
+		if seen[f.Name] {
+			// We don't allow duplicated field name.
+			return errDupSpannerField(f.Name, ty)
+		}
+		opts := []decodeOptions{withLenient{lenient: lenient}}
+		// Try to decode a single field.
+		if err := decodeValueExtended(pb.Values[i], f.Type, v.FieldByIndex(sf.Index).Addr().Interface(), customDecoder, opts...); err != nil {
 			return errDecodeStructField(ty, f.Name, err)
 		}
 		// Mark field f.Name as processed.

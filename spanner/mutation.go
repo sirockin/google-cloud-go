@@ -192,6 +192,38 @@ func structToMutationParams(in interface{}) ([]string, []interface{}, error) {
 	return cols, vals, nil
 }
 
+func structToMutationParamsExtended(in interface{}, convertFn func(any)any) ([]string, []interface{}, error) {
+	if in == nil {
+		return nil, nil, errNotStruct(in)
+	}
+	v := reflect.ValueOf(in)
+	t := v.Type()
+	if t.Kind() == reflect.Ptr && t.Elem().Kind() == reflect.Struct {
+		// t is a pointer to a struct.
+		if v.IsNil() {
+			// Return empty results.
+			return nil, nil, nil
+		}
+		// Get the struct value that in points to.
+		v = v.Elem()
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil, nil, errNotStruct(in)
+	}
+	fields, err := fieldCache.Fields(t)
+	if err != nil {
+		return nil, nil, ToSpannerError(err)
+	}
+	var cols []string
+	var vals []interface{}
+	for _, f := range fields {
+		cols = append(cols, f.Name)
+		vals = append(vals, convertFn(v.FieldByIndex(f.Index).Interface()))
+	}
+	return cols, vals, nil
+}
+
 // Insert returns a Mutation to insert a row into a table. If the row already
 // exists, the write or transaction fails with codes.AlreadyExists.
 func Insert(table string, cols []string, vals []interface{}) *Mutation {
@@ -226,6 +258,21 @@ func InsertStruct(table string, in interface{}) (*Mutation, error) {
 	return Insert(table, cols, vals), nil
 }
 
+// InsertStructExtended returns a Mutation to insert a row into a table, specified by
+// a Go struct.  If the row already exists, the write or transaction fails with
+// codes.AlreadyExists.
+//
+// The in argument must be a struct or a pointer to a struct. Its exported
+// fields specify the column names and values. Use a field tag like `spanner:"name"`
+// to provide an alternative column name, or use `spanner:"-"` to ignore the field.
+func InsertStructExtended(table string, in interface{}, convertFn func(any)any) (*Mutation, error) {
+	cols, vals, err := structToMutationParamsExtended(in, convertFn)
+	if err != nil {
+		return nil, err
+	}
+	return Insert(table, cols, vals), nil
+}
+
 // Update returns a Mutation to update a row in a table. If the row does not
 // already exist, the write or transaction fails.
 func Update(table string, cols []string, vals []interface{}) *Mutation {
@@ -249,6 +296,17 @@ func UpdateMap(table string, in map[string]interface{}) *Mutation {
 // struct. If the row does not already exist, the write or transaction fails.
 func UpdateStruct(table string, in interface{}) (*Mutation, error) {
 	cols, vals, err := structToMutationParams(in)
+	if err != nil {
+		return nil, err
+	}
+	return Update(table, cols, vals), nil
+}
+
+
+// UpdateStructExtended returns a Mutation to update a row in a table, specified by a Go
+// struct. If the row does not already exist, the write or transaction fails.
+func UpdateStructExtended(table string, in interface{}, convertFn func(any)any) (*Mutation, error) {
+	cols, vals, err := structToMutationParamsExtended(in, convertFn)
 	if err != nil {
 		return nil, err
 	}

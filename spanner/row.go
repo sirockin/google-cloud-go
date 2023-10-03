@@ -321,6 +321,24 @@ func (r *Row) ToStruct(p interface{}) error {
 	)
 }
 
+func (r *Row) ToStructExtended(p interface{}, customDecoder func(v *proto3.Value, t *sppb.Type, ptr interface{}) bool) error {
+	// Check if p is a pointer to a struct
+	if t := reflect.TypeOf(p); t == nil || t.Kind() != reflect.Ptr || t.Elem().Kind() != reflect.Struct {
+		return errToStructArgType(p)
+	}
+	if len(r.vals) != len(r.fields) {
+		return errFieldsMismatchVals(r)
+	}
+	// Call decodeStruct directly to decode the row as a typed proto.ListValue.
+	return decodeStructExtended(
+		&sppb.StructType{Fields: r.fields},
+		&proto3.ListValue{Values: r.vals},
+		p,
+		false,
+		customDecoder,
+	)
+}
+
 // ToStructLenient fetches the columns in a row into the fields of a struct.
 // The rules for mapping a row's columns into a struct's exported fields
 // are:
